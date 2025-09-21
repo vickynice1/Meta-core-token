@@ -1,0 +1,148 @@
+name: Deploy Smart Contract to BSC Testnet
+
+on:
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      deploy_reason:
+        description: 'Reason for deployment'
+        required: false
+        default: 'Manual deployment'
+  
+  # Scheduled deployment (every day at 12:00 UTC)
+  schedule:
+    - cron: '0 12 * * *'
+  
+  # Trigger on push to main branch
+  push:
+    branches: [ main ]
+    paths: 
+      - 'contracts/**'
+      - 'scripts/**'
+
+env:
+  BSC_RPC_URL: 'https://data-seed-prebsc-1-s1.binance.org:8545/'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout Repository
+      uses: actions/checkout@v4
+    
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        cache: 'pip'
+    
+    - name: 📦 Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: 🔍 Check Balance
+      env:
+        PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+      run: |
+        python -c "
+        from web3 import Web3
+        from eth_account import Account
+        import os
+        
+        w3 = Web3(Web3.HTTPProvider('${{ env.BSC_RPC_URL }}'))
+        account = Account.from_key(os.getenv('PRIVATE_KEY'))
+        balance = w3.eth.get_balance(account.address)
+        balance_bnb = w3.from_wei(balance, 'ether')
+        
+        print(f'Wallet: {account.address}')
+        print(f'Balance: {balance_bnb} BNB')
+        
+        if balance == 0:
+            print('⚠️ Warning: No BNB balance!')
+            print('Get testnet BNB from: https://testnet.binance.org/faucet-smart')
+        "
+    
+    - name: 🚀 Deploy Contract
+      env:
+        PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+        BSC_RPC_URL: ${{ env.BSC_RPC_URL }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        python scripts/deploy.py
+      id: deploy
+    
+    - name: 📊 Upload Deployment Results
+      uses: actions/upload-artifact@v3
+      with:
+        name: deployment-results
+        path: deployment_result.json
+        retention-days: 30
+    
+    - name: 💬 Create Deployment Summary
+      run: |
+        echo "## 🎉 Contract Deployment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f deployment_result.json ]; then
+          CONTRACT_ADDRESS=$(python -c "import json; data=json.load(open('deployment_result.json')); print(data['deployment_info']['contract_address'])")
+          TX_HASH=$(python -c "import json; data=json.load(open('deployment_result.json')); print(data['deployment_info']['transaction_hash'])")
+          BLOCK_NUMBER=$(python -c "import json; data=json.load(open('deployment_result.json')); print(data['deployment_info']['block_number'])")
+          GAS_USED=$(python -c "import json; data=json.load(open('deployment_result.json')); print(data['deployment_info']['gas_used'])")
+          
+          echo "- **Contract Address:** \`$CONTRACT_ADDRESS\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Transaction Hash:** \`$TX_HASH\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Block Number:** $BLOCK_NUMBER" >> $GITHUB_STEP_SUMMARY
+          echo "- **Gas Used:** $GAS_USED" >> $GITHUB_STEP_SUMMARY
+          echo "- **BSCScan:** [View Contract](https://testnet.bscscan.com/address/$CONTRACT_ADDRESS)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Network:** BSC Testnet" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployment Time:** $(date -u)" >> $GITHUB_STEP_SUMMARY
+        fi
+    
+    - name: 📝 Comment on PR (if applicable)
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          if (fs.existsSync('deployment_result.json')) {
+            const data = JSON.parse(fs.readFileSync('deployment_result.json', 'utf8'));
+            const comment = `## 🚀 Contract Deployed Successfully!
+            
+            **Contract Address:** \`${data.deployment_info.contract_address}\`
+            **Transaction Hash:** \`${data.deployment_info.transaction_hash}\`
+            **BSCScan:** [View Contract](${data.deployment_info.bscscan_url})
+            **Gas Used:** ${data.deployment_info.gas_used.toLocaleString()}
+            
+            **Contract Info:**
+            - Name: ${data.contract_info.name}
+            - Symbol: ${data.contract_info.symbol}
+            - Total Supply: ${(parseInt(data.contract_info.totalSupply) / Math.pow(10, data.contract_info.decimals)).toLocaleString()}
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+          }
+
+  notify:
+    needs: deploy
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: 📧 Send Notification
+      if: needs.deploy.result == 'success'
+      run: |
+        echo "✅ Contract deployment completed successfully!"
+        echo "Check the Actions tab for deployment details."
+    
+    - name: 🚨 Send Failure Notification
+      if: needs.deploy.result == 'failure'
+      run: |
+        echo "❌ Contract deployment failed!"
+        echo "Check the Actions logs for error details."
