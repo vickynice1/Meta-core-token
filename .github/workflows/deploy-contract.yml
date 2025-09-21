@@ -1,19 +1,20 @@
-name: Deploy Smart Contract to BSC Testnet
+name: Deploy and Verify Smart Contract on BSC Testnet
 
 on:
-  # Manual trigger
   workflow_dispatch:
     inputs:
       deploy_reason:
         description: 'Reason for deployment'
         required: false
         default: 'Manual deployment'
+      auto_verify:
+        description: 'Attempt automatic verification'
+        type: boolean
+        default: true
   
-  # Scheduled deployment (every day at 12:00 UTC)
   schedule:
     - cron: '0 12 * * *'
   
-  # Trigger on push to main branch
   push:
     branches: [ main ]
     paths: 
@@ -24,7 +25,7 @@ env:
   BSC_RPC_URL: 'https://data-seed-prebsc-1-s1.binance.org:8545/'
 
 jobs:
-  deploy:
+  deploy-and-verify:
     runs-on: ubuntu-latest
     
     steps:
@@ -40,9 +41,9 @@ jobs:
     - name: 📦 Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install web3==6.15.1 py-solc-x==2.0.2 eth-account==0.10.0 requests==2.31.0
     
-    - name: 🔍 Check Balance
+    - name: 🔍 Pre-deployment Check
       env:
         PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
       run: |
@@ -56,43 +57,43 @@ jobs:
         balance = w3.eth.get_balance(account.address)
         balance_bnb = w3.from_wei(balance, 'ether')
         
-        print(f'Wallet: {account.address}')
-        print(f'Balance: {balance_bnb} BNB')
+        print(f'🔗 Network: BSC Testnet')
+        print(f'📍 Deployer: {account.address}')
+        print(f'💰 Balance: {balance_bnb} BNB')
+        print(f'⛽ Gas Price: {w3.from_wei(w3.eth.gas_price, \"gwei\")} Gwei')
         
         if balance == 0:
-            print('⚠️ Warning: No BNB balance!')
-            print('Get testnet BNB from: https://testnet.binance.org/faucet-smart')
+            print('⚠️ WARNING: No BNB balance!')
+            print('🔗 Get testnet BNB: https://testnet.binance.org/faucet-smart')
+        else:
+            print('✅ Ready for deployment!')
         "
     
-    - name: 🚀 Deploy Contract
+    - name: 🚀 Deploy and Verify Contract
       env:
         PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
         BSC_RPC_URL: ${{ env.BSC_RPC_URL }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        BSCSCAN_API_KEY: ${{ secrets.BSCSCAN_API_KEY }}
       run: |
         python scripts/deploy.py
       id: deploy
     
-    - name: 📊 Upload Deployment Results
+    - name: 📊 Upload Deployment Artifacts
       uses: actions/upload-artifact@v4
+      if: always()
       with:
-        name: deployment-results-${{ github.run_number }}
-        path: deployment_result.json
+        name: deployment-artifacts-${{ github.run_number }}
+        path: |
+          deployment_result.json
+          verification_source.sol
         retention-days: 30
         compression-level: 6
     
-    - name: 💾 Save Contract Address to Environment
+    - name: 💬 Create Deployment Summary
       if: success()
       run: |
-        if [ -f deployment_result.json ]; then
-          CONTRACT_ADDRESS=$(python -c "import json; data=json.load(open('deployment_result.json')); print(data['deployment_info']['contract_address'])")
-          echo "CONTRACT_ADDRESS=$CONTRACT_ADDRESS" >> $GITHUB_ENV
-          echo "DEPLOYMENT_SUCCESS=true" >> $GITHUB_ENV
-        fi
-    
-    - name: 💬 Create Deployment Summary
-      run: |
-        echo "## 🎉 Contract Deployment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "## 🎉 Smart Contract Deployment Summary" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
         if [ -f deployment_result.json ]; then
@@ -101,6 +102,7 @@ jobs:
           BLOCK_NUMBER=$(python -c "import json; data=json.load(open('deployment_result.json')); print(data['deployment_info']['block_number'])")
           GAS_USED=$(python -c "import json; data=json.load(open('deployment_result.json')); print(data['deployment_info']['gas_used'])")
           DEPLOYER=$(python -c "import json; data=json.load(open('deployment_result.json')); print(data['deployment_info']['deployer_address'])")
+          VERIFICATION_ATTEMPTED=$(python -c "import json; data=json.load(open('deployment_result.json')); print(data['verification_info']['auto_verification_attempted'])")
           
           echo "### 📋 Deployment Details" >> $GITHUB_STEP_SUMMARY
           echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
@@ -108,32 +110,57 @@ jobs:
           echo "| **Contract Address** | \`$CONTRACT_ADDRESS\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Transaction Hash** | \`$TX_HASH\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Block Number** | $BLOCK_NUMBER |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Gas Used** | $GAS_USED |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Gas Used** | $(printf "%'d" $GAS_USED) |" >> $GITHUB_STEP_SUMMARY
           echo "| **Deployer** | \`$DEPLOYER\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Network** | BSC Testnet |" >> $GITHUB_STEP_SUMMARY
           echo "| **Deployment Time** | $(date -u) |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🔗 Links" >> $GITHUB_STEP_SUMMARY
-          echo "- [View on BSCScan](https://testnet.bscscan.com/address/$CONTRACT_ADDRESS)" >> $GITHUB_STEP_SUMMARY
-          echo "- [View Transaction](https://testnet.bscscan.com/tx/$TX_HASH)" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 🔗 Important Links" >> $GITHUB_STEP_SUMMARY
+          echo "- [📊 View Contract on BSCScan](https://testnet.bscscan.com/address/$CONTRACT_ADDRESS)" >> $GITHUB_STEP_SUMMARY
+          echo "- [📝 View Transaction](https://testnet.bscscan.com/tx/$TX_HASH)" >> $GITHUB_STEP_SUMMARY
+          echo "- [🔍 Manual Verification](https://testnet.bscscan.com/verifyContract?a=$CONTRACT_ADDRESS)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          # Add contract info
-          echo "### 🪙 Token Details" >> $GITHUB_STEP_SUMMARY
+          # Token details
           NAME=$(python -c "import json; data=json.load(open('deployment_result.json')); print(data['contract_info']['name'])")
           SYMBOL=$(python -c "import json; data=json.load(open('deployment_result.json')); print(data['contract_info']['symbol'])")
           DECIMALS=$(python -c "import json; data=json.load(open('deployment_result.json')); print(data['contract_info']['decimals'])")
           TOTAL_SUPPLY=$(python -c "import json; data=json.load(open('deployment_result.json')); print(int(data['contract_info']['totalSupply']) // (10**int(data['contract_info']['decimals'])))")
           
+          echo "### 🪙 Token Information" >> $GITHUB_STEP_SUMMARY
           echo "- **Name:** $NAME" >> $GITHUB_STEP_SUMMARY
           echo "- **Symbol:** $SYMBOL" >> $GITHUB_STEP_SUMMARY
           echo "- **Decimals:** $DECIMALS" >> $GITHUB_STEP_SUMMARY
-          echo "- **Total Supply:** $TOTAL_SUPPLY $SYMBOL" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Supply:** $(printf "%'d" $TOTAL_SUPPLY) $SYMBOL" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Verification status
+          echo "### 🔍 Verification Status" >> $GITHUB_STEP_SUMMARY
+          if [ "$VERIFICATION_ATTEMPTED" = "True" ]; then
+            echo "✅ **Automatic verification attempted**" >> $GITHUB_STEP_SUMMARY
+            echo "- Check BSCScan to confirm verification status" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "📋 **Manual verification required**" >> $GITHUB_STEP_SUMMARY
+            echo "- Use the verification link above" >> $GITHUB_STEP_SUMMARY
+            echo "- Source code available in artifacts" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Verification instructions
+          echo "### 📝 Manual Verification Instructions" >> $GITHUB_STEP_SUMMARY
+          echo "1. Go to [BSCScan Verification](https://testnet.bscscan.com/verifyContract?a=$CONTRACT_ADDRESS)" >> $GITHUB_STEP_SUMMARY
+          echo "2. Select **Solidity (Single file)**" >> $GITHUB_STEP_SUMMARY
+          echo "3. Use compiler version: **v0.8.19+commit.7dd6d404**" >> $GITHUB_STEP_SUMMARY
+          echo "4. Enable optimization with **200 runs**" >> $GITHUB_STEP_SUMMARY
+          echo "5. Select **MIT License**" >> $GITHUB_STEP_SUMMARY
+          echo "6. Copy source code from \`verification_source.sol\` artifact" >> $GITHUB_STEP_SUMMARY
+          echo "7. Leave constructor arguments empty" >> $GITHUB_STEP_SUMMARY
         else
           echo "❌ Deployment failed - no result file found" >> $GITHUB_STEP_SUMMARY
         fi
     
-    - name: 📝 Comment on PR (if applicable)
+    - name: 📝 Comment on PR
       if: github.event_name == 'pull_request' && success()
       uses: actions/github-script@v7
       with:
@@ -141,27 +168,33 @@ jobs:
           const fs = require('fs');
           if (fs.existsSync('deployment_result.json')) {
             const data = JSON.parse(fs.readFileSync('deployment_result.json', 'utf8'));
-            const comment = `## 🚀 Contract Deployed Successfully!
+            const verificationStatus = data.verification_info.auto_verification_attempted ? 
+              '✅ Automatic verification attempted' : 
+              '📋 Manual verification required';
+            
+            const comment = `## 🚀 Smart Contract Deployed Successfully!
             
             ### 📋 Deployment Details
             - **Contract Address:** \`${data.deployment_info.contract_address}\`
             - **Transaction Hash:** \`${data.deployment_info.transaction_hash}\`
             - **Block Number:** ${data.deployment_info.block_number}
             - **Gas Used:** ${data.deployment_info.gas_used.toLocaleString()}
-            - **Deployer:** \`${data.deployment_info.deployer_address}\`
+            - **Network:** BSC Testnet
             
             ### 🪙 Token Information
             - **Name:** ${data.contract_info.name}
             - **Symbol:** ${data.contract_info.symbol}
-            - **Decimals:** ${data.contract_info.decimals}
             - **Total Supply:** ${(parseInt(data.contract_info.totalSupply) / Math.pow(10, data.contract_info.decimals)).toLocaleString()} ${data.contract_info.symbol}
             
+            ### 🔍 Verification
+            ${verificationStatus}
+            
             ### 🔗 Links
-            - [View on BSCScan](${data.deployment_info.bscscan_url})
-            - [View Transaction](https://testnet.bscscan.com/tx/${data.deployment_info.transaction_hash})
+            - [📊 View on BSCScan](${data.deployment_info.bscscan_url})
+            - [🔍 Manual Verification](${data.deployment_info.verification_url})
             
             ---
-            *Deployed automatically via GitHub Actions* 🤖
+            *Deployed via GitHub Actions* 🤖
             `;
             
             github.rest.issues.createComment({
@@ -173,66 +206,31 @@ jobs:
           }
     
     outputs:
-      contract_address: ${{ env.CONTRACT_ADDRESS }}
-      deployment_success: ${{ env.DEPLOYMENT_SUCCESS }}
+      contract_address: ${{ steps.deploy.outputs.contract_address }}
+      verification_url: ${{ steps.deploy.outputs.verification_url }}
+      bscscan_url: ${{ steps.deploy.outputs.bscscan_url }}
 
   notify:
-    needs: deploy
+    needs: deploy-and-verify
     runs-on: ubuntu-latest
     if: always()
     
     steps:
-    - name: 📧 Send Success Notification
-      if: needs.deploy.result == 'success'
+    - name: 📧 Success Notification
+      if: needs.deploy-and-verify.result == 'success'
       run: |
-        echo "✅ Contract deployment completed successfully!"
-        echo "Contract Address: ${{ needs.deploy.outputs.contract_address }}"
-        echo "Check the Actions tab for detailed deployment information."
+        echo "🎉 CONTRACT DEPLOYMENT SUCCESSFUL!"
+        echo "📍 Contract: ${{ needs.deploy-and-verify.outputs.contract_address }}"
+        echo "🔗 BSCScan: ${{ needs.deploy-and-verify.outputs.bscscan_url }}"
+        echo "🔍 Verification: ${{ needs.deploy-and-verify.outputs.verification_url }}"
     
-    - name: 🚨 Send Failure Notification
-      if: needs.deploy.result == 'failure'
+    - name: 🚨 Failure Notification
+      if: needs.deploy-and-verify.result == 'failure'
       run: |
-        echo "❌ Contract deployment failed!"
-        echo "Check the Actions logs for error details."
-        echo "Common issues:"
-        echo "- Insufficient BNB balance"
-        echo "- Invalid private key"
-        echo "- Network connectivity issues"
-        echo "- Contract compilation errors"
-
-  # Optional: Create a GitHub release with deployment info
-  create_release:
-    needs: deploy
-    runs-on: ubuntu-latest
-    if: needs.deploy.result == 'success' && github.event_name == 'push'
-    
-    steps:
-    - name: 📥 Checkout Repository
-      uses: actions/checkout@v4
-    
-    - name: 📥 Download Deployment Results
-      uses: actions/download-artifact@v4
-      with:
-        name: deployment-results-${{ github.run_number }}
-    
-    - name: 🏷️ Create Release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: deployment-${{ github.run_number }}
-        release_name: Contract Deployment ${{ github.run_number }}
-        body: |
-          ## 🚀 Smart Contract Deployment
-          
-          **Contract Address:** `${{ needs.deploy.outputs.contract_address }}`
-          **Network:** BSC Testnet
-          **Deployment Time:** ${{ github.event.head_commit.timestamp }}
-          
-          ### 🔗 Links
-          - [View on BSCScan](https://testnet.bscscan.com/address/${{ needs.deploy.outputs.contract_address }})
-          
-          ### 📁 Artifacts
-          - Deployment details are attached as artifacts
-        draft: false
-        prerelease: false
+        echo "❌ CONTRACT DEPLOYMENT FAILED!"
+        echo "🔍 Check the workflow logs for details"
+        echo "💡 Common issues:"
+        echo "   - Insufficient BNB balance"
+        echo "   - Network connectivity problems"
+        echo "   - Contract compilation errors"
+        echo "   - Invalid private key"
